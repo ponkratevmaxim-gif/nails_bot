@@ -455,7 +455,7 @@ def cancel_reminders_for_booking(booking_id: int) -> None:
 
 async def restore_reminders() -> None:
     rows = await get_future_bookings()
-    now = datetime.utcnow()
+    now = datetime.now()
 
     for booking_id, user_id, date_str, time_str, created_at in rows:
         try:
