@@ -4,7 +4,6 @@ import logging
 import os
 import re
 from datetime import datetime, timedelta
-from aiosqlite import connect as sqlite_connect
 from pathlib import Path
 from secrets import token_urlsafe
 
@@ -28,6 +27,7 @@ from aiogram.types import (
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from dotenv import load_dotenv
 
+import database as db_module
 from booking_calendar import generate_time_slots_keyboard
 from database import (
     add_time_slot,
@@ -380,11 +380,12 @@ async def safe_send_message(chat_id: int, text: str, **kwargs) -> bool:
 
 
 async def register_user(user_id: int, username: str | None, first_name: str | None) -> None:
-    async with sqlite_connect(DB_NAME) as db:
-        await db.execute(
+    conn_pool = await db_module._get_pool()
+    async with conn_pool.acquire() as conn:
+        await conn.execute(
             """
             CREATE TABLE IF NOT EXISTS users (
-                user_id INTEGER PRIMARY KEY,
+                user_id BIGINT PRIMARY KEY,
                 username TEXT,
                 first_name TEXT,
                 created_at TEXT NOT NULL
@@ -392,46 +393,52 @@ async def register_user(user_id: int, username: str | None, first_name: str | No
             """
         )
         created_at = datetime.utcnow().isoformat()
-        await db.execute(
+        await conn.execute(
             """
             INSERT INTO users (user_id, username, first_name, created_at)
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT(user_id) DO UPDATE SET
-                username = excluded.username,
-                first_name = excluded.first_name
-            """
-            ,(user_id, username, first_name, created_at)
+            VALUES ($1, $2, $3, $4)
+            ON CONFLICT (user_id) DO UPDATE SET
+                username = EXCLUDED.username,
+                first_name = EXCLUDED.first_name
+            """,
+            user_id,
+            username,
+            first_name,
+            created_at,
         )
-        await db.commit()
 
 
 async def get_registered_user_ids() -> list[int]:
-    async with sqlite_connect(DB_NAME) as db:
-        await db.execute(
+    conn_pool = await db_module._get_pool()
+    async with conn_pool.acquire() as conn:
+        await conn.execute(
             """
             CREATE TABLE IF NOT EXISTS users (
-                user_id INTEGER PRIMARY KEY,
+                user_id BIGINT PRIMARY KEY,
                 username TEXT,
                 first_name TEXT,
                 created_at TEXT NOT NULL
             )
             """
         )
-        async with db.execute("SELECT user_id FROM users") as cursor:
-            rows = await cursor.fetchall()
-    return [row[0] for row in rows]
+        rows = await conn.fetch("SELECT user_id FROM users")
+    return [row["user_id"] for row in rows]
 
 
 async def get_all_bookings_summary():
-    async with sqlite_connect(DB_NAME) as db:
-        async with db.execute(
+    conn_pool = await db_module._get_pool()
+    async with conn_pool.acquire() as conn:
+        rows = await conn.fetch(
             """
             SELECT user_id, name, phone, date, time
             FROM bookings
             ORDER BY date, time
             """
-        ) as cursor:
-            return await cursor.fetchall()
+        )
+    return [
+        (row["user_id"], row["name"], row["phone"], row["date"], row["time"])
+        for row in rows
+    ]
 
 def schedule_reminders_for_booking(
     booking_id: int,
@@ -1796,4 +1803,5 @@ async def main() -> None:
 
 if __name__ == "__main__":
     asyncio.run(main())
+
 
