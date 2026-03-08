@@ -1560,7 +1560,7 @@ async def admin_confirm_payment(callback: CallbackQuery) -> None:
     if SALON_ADDRESS:
         await safe_send_message(
             pending["user_id"],
-            f"📍 Адрес салона:\n<b>{SALON_ADDRESS}</b>",
+            f"📍 Адрес:\n<b>{SALON_ADDRESS}</b>",
         )
 
     if SALON_LATITUDE is not None and SALON_LONGITUDE is not None:
