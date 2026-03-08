@@ -3,3 +3,4 @@ venv/
 bookings.db
 __pycache__/
 .idea/
+*.db
