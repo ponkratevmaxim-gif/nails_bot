@@ -1,5 +1,6 @@
 ﻿import asyncio
 import calendar
+import html
 import logging
 import os
 import re
@@ -371,13 +372,23 @@ async def safe_send_message(chat_id: int, text: str, **kwargs) -> bool:
         await bot.send_message(chat_id, text, **kwargs)
         return True
     except TelegramBadRequest as e:
+        err = str(e).lower()
+        if "can't parse entities" in err or "can't find end of the entity" in err:
+            # Fallback: send escaped text if admin entered broken HTML.
+            try:
+                await bot.send_message(chat_id, html.escape(text), **kwargs)
+                return True
+            except Exception as inner_e:  # noqa: BLE001
+                logging.warning(
+                    "Не удалось отправить fallback-сообщение в chat_id=%s: %s",
+                    chat_id,
+                    inner_e,
+                )
         logging.warning("Не удалось отправить сообщение в chat_id=%s: %s", chat_id, e)
         return False
     except Exception as e:  # noqa: BLE001
         logging.exception("Ошибка при отправке сообщения в chat_id=%s: %s", chat_id, e)
         return False
-
-
 
 async def register_user(user_id: int, username: str | None, first_name: str | None) -> None:
     conn_pool = await db_module._get_pool()
@@ -421,7 +432,13 @@ async def get_registered_user_ids() -> list[int]:
             )
             """
         )
-        rows = await conn.fetch("SELECT user_id FROM users")
+        rows = await conn.fetch(
+            """
+            SELECT user_id FROM users
+            UNION
+            SELECT user_id FROM bookings
+            """
+        )
     return [row["user_id"] for row in rows]
 
 
@@ -870,6 +887,15 @@ async def admin_broadcast_confirm_send(callback: CallbackQuery, state: FSMContex
         return
 
     user_ids = await get_registered_user_ids()
+
+    if not user_ids:
+        await state.clear()
+        await callback.message.answer(
+            "Нет получателей для рассылки. Пользователь должен хотя бы один раз нажать /start.",
+            reply_markup=admin_panel_menu(),
+        )
+        await callback.answer()
+        return
     sent_count = 0
     fail_count = 0
     for user_id in user_ids:
@@ -1803,5 +1829,4 @@ async def main() -> None:
 
 if __name__ == "__main__":
     asyncio.run(main())
-
 
