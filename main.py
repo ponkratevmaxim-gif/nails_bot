@@ -123,6 +123,7 @@ class BookingStates(StatesGroup):
 
 class AdminStates(StatesGroup):
     waiting_broadcast = State()
+    waiting_broadcast_confirm = State()
     waiting_admin_date = State()
     waiting_admin_time = State()
     waiting_cancel_reason = State()
@@ -153,6 +154,7 @@ def admin_panel_menu() -> ReplyKeyboardMarkup:
         keyboard=[
             [KeyboardButton(text="📅 Даты"), KeyboardButton(text="📢 Рассылка")],
             [KeyboardButton(text="💰 Ожидают подтверждения"), KeyboardButton(text="📊 Сколько записей")],
+            [KeyboardButton(text="📋 Список окон"), KeyboardButton(text="🗑 Удалить все окна")],
             [KeyboardButton(text="⬅️ В главное меню")],
         ],
         resize_keyboard=True,
@@ -168,6 +170,28 @@ def admin_dates_menu() -> InlineKeyboardMarkup:
         ]
     )
 
+
+
+def admin_confirm_inline(confirm_data: str, cancel_data: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="✅ Подтвердить", callback_data=confirm_data),
+                InlineKeyboardButton(text="❌ Отмена", callback_data=cancel_data),
+            ]
+        ]
+    )
+
+
+def admin_broadcast_confirm_inline() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="✅ Отправить", callback_data="admin_broadcast_confirm_send"),
+                InlineKeyboardButton(text="❌ Отмена", callback_data="admin_broadcast_confirm_cancel"),
+            ]
+        ]
+    )
 
 def education_menu() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
@@ -812,6 +836,32 @@ async def admin_broadcast_send(message: Message, state: FSMContext) -> None:
         return
 
     text = message.html_text or message.text
+    if not text:
+        await message.answer("Введите текстовое сообщение для рассылки.")
+        return
+
+    await state.update_data(broadcast_text=text)
+    await state.set_state(AdminStates.waiting_broadcast_confirm)
+    await message.answer(
+        f"Предпросмотр рассылки:\n\n{text}\n\nОтправить это сообщение всем пользователям?",
+        reply_markup=admin_broadcast_confirm_inline(),
+    )
+
+
+@dp.callback_query(F.data == "admin_broadcast_confirm_send")
+async def admin_broadcast_confirm_send(callback: CallbackQuery, state: FSMContext) -> None:
+    if callback.from_user.id != ADMIN_ID:
+        await callback.answer("Только админ.", show_alert=True)
+        return
+
+    data = await state.get_data()
+    text = data.get("broadcast_text")
+    if not text:
+        await state.clear()
+        await callback.message.answer("Текст рассылки не найден.", reply_markup=admin_panel_menu())
+        await callback.answer()
+        return
+
     user_ids = await get_registered_user_ids()
     sent_count = 0
     fail_count = 0
@@ -822,12 +872,88 @@ async def admin_broadcast_send(message: Message, state: FSMContext) -> None:
         else:
             fail_count += 1
 
-    await message.answer(
+    await callback.message.answer(
         f"Рассылка завершена. Отправлено: <b>{sent_count}</b>, ошибок: <b>{fail_count}</b>",
         reply_markup=admin_panel_menu(),
     )
     await state.clear()
+    await callback.answer("Рассылка отправлена")
 
+
+@dp.callback_query(F.data == "admin_broadcast_confirm_cancel")
+async def admin_broadcast_confirm_cancel(callback: CallbackQuery, state: FSMContext) -> None:
+    if callback.from_user.id != ADMIN_ID:
+        await callback.answer("Только админ.", show_alert=True)
+        return
+
+    await state.clear()
+    await callback.message.answer("Рассылка отменена.", reply_markup=admin_panel_menu())
+    await callback.answer()
+
+
+@dp.message(F.text == "🗑 Удалить все окна")
+async def admin_delete_all_free_slots_entry(message: Message) -> None:
+    if message.from_user.id != ADMIN_ID:
+        return
+
+    await message.answer(
+        "Вы уверены, что хотите удалить ВСЕ свободные окна?\n\nЭто действие нельзя отменить.",
+        reply_markup=admin_confirm_inline(
+            "admin_free_slots_delete_confirm",
+            "admin_free_slots_delete_cancel",
+        ),
+    )
+
+
+@dp.callback_query(F.data == "admin_free_slots_delete_confirm")
+async def admin_delete_all_free_slots_confirm(callback: CallbackQuery) -> None:
+    if callback.from_user.id != ADMIN_ID:
+        await callback.answer("Только админ.", show_alert=True)
+        return
+
+    dates = await get_dates_with_slots("0001-01-01", "9999-12-31")
+    for date_str in dates:
+        slots = await get_available_slots_by_date(date_str)
+        for _, time_str in slots:
+            await delete_time_slot(date_str, time_str)
+    await callback.message.answer("Все свободные окна удалены.", reply_markup=admin_panel_menu())
+    await callback.answer()
+
+
+@dp.callback_query(F.data == "admin_free_slots_delete_cancel")
+async def admin_delete_all_free_slots_cancel(callback: CallbackQuery) -> None:
+    if callback.from_user.id != ADMIN_ID:
+        await callback.answer("Только админ.", show_alert=True)
+        return
+
+    await callback.message.answer("Удаление отменено.", reply_markup=admin_panel_menu())
+    await callback.answer()
+
+
+@dp.message(F.text == "📋 Список окон")
+async def admin_free_slots_list(message: Message) -> None:
+    if message.from_user.id != ADMIN_ID:
+        return
+
+    dates = await get_dates_with_slots("0001-01-01", "9999-12-31")
+    if not dates:
+        await message.answer("Свободных окон нет.", reply_markup=admin_panel_menu())
+        return
+
+    lines = ["Свободные окна:\n"]
+    for date_str in dates:
+        slots = await get_available_slots_by_date(date_str)
+        if not slots:
+            continue
+        date_fmt = datetime.strptime(date_str, "%Y-%m-%d").strftime("%d.%m")
+        times = "; ".join(time_str for _, time_str in slots)
+        lines.append(f"{date_fmt} — {times}")
+
+    if len(lines) == 1:
+        await message.answer("Свободных окон нет.", reply_markup=admin_panel_menu())
+        return
+
+    await message.answer("\n".join(lines), reply_markup=admin_panel_menu())
 
 @dp.message(F.text == "💰 Ожидают подтверждения")
 async def admin_pending_count(message: Message) -> None:
@@ -1670,49 +1796,4 @@ async def main() -> None:
 
 if __name__ == "__main__":
     asyncio.run(main())
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
