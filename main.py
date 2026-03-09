@@ -360,7 +360,7 @@ async def send_reminder(user_id: int, time_str: str) -> None:
     try:
         await bot.send_message(
             user_id,
-            f"Напоминаем, что вы записаны на наращивание ресниц завтра в {time_str}.\n"
+            f"Напоминаем, что вы записаны в {time_str}.\n"
             f"Ждём вас ❤️",
         )
     except Exception as e:  # noqa: BLE001
